@@ -41,6 +41,42 @@ dig +short minireel.duckdns.org
 
 ---
 
+## 0.5 NAT 机（共享 IP）注意
+
+NAT 机没有独立公网 IP，只有提供商端口映射出去的那几个端口。**先确认拿到哪些公网端口**，
+再决定走哪条路：
+
+| 情况 | 做法 |
+| --- | --- |
+| 有公网 **80 + 443** | 按本文原样走，DuckDNS 的 A 记录指向提供商给的那个**共享公网 IP** |
+| 只有 **443** | 把 Caddyfile 里的站点改成 `minireel.duckdns.org:443` 的映射端口，证书用 TLS-ALPN-01（Caddy 默认就会试） |
+| **80/443 都没有** | 只能走 **DNS-01** 签发证书（不需要任何入站端口），站点跑在端口映射给你的高位端口上，访问形式是 `https://minireel.duckdns.org:<公网端口>` |
+| 连高位端口也不给 | 换一台机器，或改用打洞方案（Cloudflare Tunnel / frp），后者需要一个能托管到 Cloudflare 的域名 |
+
+DNS-01 需要带 duckdns 插件的 Caddy（官方 apt 源装的是原版，不带插件），要用 `xcaddy` 自己编：
+
+```bash
+sudo apt-get install -y xcaddy          # 或见 xcaddy 官方安装说明
+xcaddy build --with github.com/caddy-dns/duckdns
+sudo mv caddy /usr/bin/caddy && sudo systemctl restart caddy
+```
+
+Caddyfile 对应写法（`:8443` 换成映射给你的公网端口）：
+
+```
+minireel.duckdns.org:8443 {
+    tls {
+        dns duckdns {env.DUCKDNS_TOKEN}
+    }
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+> 另外两点：NAT 机的带宽通常是共享的，40MB 安装包的下载速度要有心理预期；
+> 共享公网 IP 万一被提供商换掉，DuckDNS 需要重新指向（可以挂个定时任务自动更新）。
+
+---
+
 ## 1. 安装 Node 22
 
 ```bash
