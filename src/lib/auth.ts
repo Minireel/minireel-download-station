@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { getDb } from "@/db";
@@ -159,6 +159,55 @@ export async function isAdminAuthenticated(): Promise<boolean> {
   return verifySessionToken(store.get(COOKIE_NAME)?.value);
 }
 
+/**
+ * 会话 Cookie 是否应该带 `Secure`。
+ *
+ * **必须按实际请求协议判断，不能只看 NODE_ENV。**
+ * 之前写死 `NODE_ENV === "production"`，导致「生产环境 + 纯 HTTP 访问」时浏览器直接拒收
+ * 这个 Cookie（RFC 6265bis：Secure Cookie 不能从非安全源写入），
+ * 表现就是登录态莫名其妙丢失、接口返回未登录。
+ *
+ * 现在：反代透传了 `x-forwarded-proto: https`（Caddy/Nginx/Cloudflare 都会带）就上 Secure，
+ * 否则说明是明文 HTTP 访问，不加 Secure，保证可用。
+ */
+async function cookieShouldBeSecure(): Promise<boolean> {
+  try {
+    const store = await headers();
+    const forwarded = store.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    if (forwarded) return forwarded === "https";
+    if (store.get("cf-visitor")?.includes('"scheme":"https"')) return true;
+    const forwardedSsl = store.get("x-forwarded-ssl")?.trim();
+    if (forwardedSsl) return forwardedSsl === "on";
+  } catch {
+    // headers() 在个别上下文不可用，退回环境判断。
+  }
+  return isProduction();
+}
+
+/** 供 /api/health 输出运行时诊断信息，便于远程排查登录态问题。 */
+export async function sessionTransportInfo(): Promise<{
+  nodeEnv: string;
+  forwardedProto: string | null;
+  cookieSecure: boolean;
+}> {
+  let forwardedProto: string | null = null;
+  try {
+    const store = await headers();
+    forwardedProto = store.get("x-forwarded-proto");
+  } catch {
+    forwardedProto = null;
+  }
+  return {
+    nodeEnv: process.env.NODE_ENV ?? "unset",
+    forwardedProto,
+    cookieSecure: await cookieShouldBeSecure(),
+  };
+}
+
+export function adminCookieName(): string {
+  return COOKIE_NAME;
+}
+
 export async function requireAdmin(): Promise<void> {
   if (!(await isAdminAuthenticated())) {
     redirect("/admin/login");
@@ -173,7 +222,7 @@ export async function startAdminSession(): Promise<void> {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: isProduction(),
+    secure: await cookieShouldBeSecure(),
     maxAge: SESSION_TTL_SECONDS,
   });
 }

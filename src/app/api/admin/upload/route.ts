@@ -1,6 +1,7 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { isAdminAuthenticated } from "@/lib/auth";
+import { adminCookieName, isAdminAuthenticated } from "@/lib/auth";
 import { isPlatformId } from "@/lib/platforms";
 import { buildStorageKey, putObject, storageInfo } from "@/lib/storage";
 
@@ -38,6 +39,13 @@ function toHex(bytes: Uint8Array): string {
 
 export async function POST(request: Request) {
   if (!(await isAdminAuthenticated())) {
+    // 排查「上传时提示未登录」用的日志：区分「Cookie 根本没带上」与「带了但校验不过」。
+    const raw = (await cookies()).get(adminCookieName())?.value;
+    console.warn(
+      `[upload] 会话校验失败：${
+        raw ? `收到会话 cookie（长度 ${raw.length}）但校验未通过` : "请求未携带会话 cookie"
+      }`,
+    );
     return NextResponse.json({ error: "未登录或会话已过期。" }, { status: 401 });
   }
 
