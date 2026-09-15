@@ -18,7 +18,7 @@ import {
   startAdminSession,
   verifyPassword,
 } from "@/lib/auth";
-import { RELEASE_CHANNELS, isPlatformId } from "@/lib/platforms";
+import { PLATFORM_LABEL, RELEASE_CHANNELS, isPlatformId } from "@/lib/platforms";
 import { deleteObject } from "@/lib/storage";
 
 export type FormState = { error?: string; success?: string } | null;
@@ -83,53 +83,131 @@ function readText(formData: FormData, field: string): string {
   return String(formData.get(field) ?? "").trim();
 }
 
+/** 新建发布时前端用 `assetsJson` 一次提交多个平台的安装包。 */
+type AssetPayload = {
+  platform?: string;
+  storageKey?: string;
+  fileName?: string;
+  fileSize?: number | null;
+  fileExt?: string | null;
+  sha256?: string | null;
+  arch?: string | null;
+  minOs?: string | null;
+};
+
+function parseAssets(formData: FormData): AssetPayload[] {
+  const raw = String(formData.get("assetsJson") ?? "").trim();
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as AssetPayload[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function saveReleaseAction(_prev: FormState, formData: FormData): Promise<FormState> {
   await assertAdmin();
   await ensureDatabase();
   const db = await getDb();
+
   const id = readNumber(formData, "id");
-  const platform = readText(formData, "platform");
   const version = readText(formData, "version");
-  const channelRaw = readText(formData, "channel");
-  if (!isPlatformId(platform)) return { error: "请选择有效的平台。" };
   if (!version) return { error: "请填写版本号，例如 2.4.0。" };
   if (version.length > 40) return { error: "版本号过长。" };
 
+  const channelRaw = readText(formData, "channel");
   const channel = (RELEASE_CHANNELS as readonly string[]).includes(channelRaw) ? channelRaw : "stable";
   const publishedRaw = readText(formData, "publishedAt");
   const publishedAt = publishedRaw ? new Date(`${publishedRaw}T12:00:00.000Z`) : new Date();
-  const fileName = readText(formData, "fileName") || null;
 
-  const payload = {
-    platform,
+  // 多平台共用的字段
+  const shared = {
     version,
     buildNumber: readNumber(formData, "buildNumber"),
     channel,
-    title: readText(formData, "title") || `MiniReel ${version}`,
     summary: readText(formData, "summary") || null,
     releaseNotes: readText(formData, "releaseNotes") || null,
-    fileName,
-    fileSize: readNumber(formData, "fileSize"),
-    fileExt: readText(formData, "fileExt") || (fileName?.includes(".") ? fileName.split(".").pop()! : null),
-    storageKey: readText(formData, "storageKey") || null,
-    downloadUrl: readText(formData, "downloadUrl") || null,
-    sha256: readText(formData, "sha256") || null,
-    arch: readText(formData, "arch") || null,
-    minOs: readText(formData, "minOs") || null,
     isVisible: formData.get("isVisible") === "on" || formData.get("isVisible") === "true",
     isPrerelease: formData.get("isPrerelease") === "on" || formData.get("isPrerelease") === "true",
     publishedAt: Number.isNaN(publishedAt.getTime()) ? new Date() : publishedAt,
     updatedAt: new Date(),
   };
+  const customTitle = readText(formData, "title");
+
+  let redirectTo = "/admin/releases?saved=new";
+  const touched = new Set<string>();
 
   try {
-    if (id) await db.update(releases).set(payload).where(eq(releases.id, id));
-    else await db.insert(releases).values(payload);
+    if (id) {
+      // —— 编辑已有记录：单平台 ——
+      const platform = readText(formData, "platform");
+      if (!isPlatformId(platform)) return { error: "请选择有效的平台。" };
+      const fileName = readText(formData, "fileName") || null;
+      await db
+        .update(releases)
+        .set({
+          ...shared,
+          title: customTitle || `MiniReel ${version}`,
+          platform,
+          fileName,
+          fileSize: readNumber(formData, "fileSize"),
+          fileExt:
+            readText(formData, "fileExt") ||
+            (fileName?.includes(".") ? fileName.split(".").pop()! : null),
+          storageKey: readText(formData, "storageKey") || null,
+          downloadUrl: readText(formData, "downloadUrl") || null,
+          sha256: readText(formData, "sha256") || null,
+          arch: readText(formData, "arch") || null,
+          minOs: readText(formData, "minOs") || null,
+        })
+        .where(eq(releases.id, id));
+      touched.add(platform);
+      redirectTo = `/admin/releases?saved=${id}`;
+    } else {
+      // —— 新建：一个平台一条记录，一次提交批量写入 ——
+      const assets = parseAssets(formData);
+      if (!assets.length) return { error: "请至少为一个平台上传安装包。" };
+
+      const rows = [];
+      for (const asset of assets) {
+        const platform = String(asset.platform ?? "");
+        if (!isPlatformId(platform)) return { error: `未知平台：${platform || "(空)"}` };
+        const fileName = asset.fileName?.trim() || null;
+        rows.push({
+          ...shared,
+          platform,
+          title: customTitle || `MiniReel ${version} · ${PLATFORM_LABEL[platform] ?? platform}`,
+          fileName,
+          fileSize:
+            typeof asset.fileSize === "number" && Number.isFinite(asset.fileSize)
+              ? asset.fileSize
+              : null,
+          fileExt:
+            asset.fileExt?.trim() ||
+            (fileName?.includes(".") ? fileName.split(".").pop()! : null),
+          storageKey: asset.storageKey?.trim() || null,
+          downloadUrl: null,
+          sha256: asset.sha256?.trim() || null,
+          arch: asset.arch?.trim() || null,
+          minOs: asset.minOs?.trim() || null,
+        });
+        touched.add(platform);
+      }
+      if (!rows.some((row) => row.storageKey)) {
+        return { error: "没有拿到有效的安装包对象，请重新上传后再提交。" };
+      }
+
+      await db.insert(releases).values(rows);
+      redirectTo = "/admin/releases?saved=new";
+    }
   } catch (error) {
     return { error: error instanceof Error ? error.message : "保存失败，请稍后再试。" };
   }
-  refreshSite(platform);
-  redirect(id ? `/admin/releases?saved=${id}` : "/admin/releases?saved=new");
+
+  // redirect() 靠抛异常实现，必须放在 try/catch 之外，否则会被当成保存失败吞掉。
+  for (const platform of touched) refreshSite(platform);
+  redirect(redirectTo);
 }
 
 export async function deleteReleaseAction(formData: FormData): Promise<void> {

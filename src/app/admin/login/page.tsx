@@ -70,10 +70,20 @@ export default async function AdminLoginPage() {
                   ，然后重新部署。
                 </span>
               </p>
-            ) : (
+            ) : config.passwordConfigured && config.secretConfigured ? (
               <p className="flex items-center gap-2">
                 <Icon name="lock" size={15} />
                 后台口令与会话密钥已通过环境变量配置。
+              </p>
+            ) : (
+              <p className="flex items-start gap-2 rounded-2xl bg-surface-container px-3.5 py-2.5">
+                <Icon name="info" size={15} />
+                <span>
+                  开发模式：正在使用内置口令{" "}
+                  <span className="font-mono font-bold">minireel-admin</span>。生产环境不会回退，
+                  必须先设置 <span className="font-mono">ADMIN_PASSWORD</span> 与{" "}
+                  <span className="font-mono">ADMIN_SESSION_SECRET</span>。
+                </span>
               </p>
             )}
           </div>

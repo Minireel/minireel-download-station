@@ -18,10 +18,18 @@ type UploadResult = {
   publicUrl: string | null;
 };
 
+/** 每个平台的安装包槽位：文件信息 + 该平台自己的架构与最低系统要求。 */
+type AssetSlot = UploadResult & { arch: string; minOs: string };
+
 const initialState: FormState = null;
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function defaultMeta(platform: string): { arch: string; minOs: string } {
+  const def = platformDef(platform);
+  return { arch: def?.archOptions[0] ?? "", minOs: def?.defaultMinOs ?? "" };
 }
 
 function Toggle({
@@ -109,56 +117,139 @@ export function ReleaseForm({
   release?: Release | null;
   defaultPlatform?: string;
 }) {
+  const editing = Boolean(release);
   const [state, formAction, pending] = useActionState(saveReleaseAction, initialState);
-  const [platform, setPlatform] = useState(release?.platform ?? defaultPlatform ?? "android");
+
+  const initialPlatform = release?.platform ?? defaultPlatform ?? "android";
+
+  /** 编辑模式：这条记录所属的平台。新建模式：当前正在填写的平台。 */
+  const [platform, setPlatform] = useState(initialPlatform);
   const [version, setVersion] = useState(release?.version ?? "");
-  const [asset, setAsset] = useState<UploadResult | null>(
-    release?.storageKey
-      ? {
-          key: release.storageKey,
-          fileName: release.fileName ?? release.storageKey.split("/").pop() ?? "package",
-          fileSize: release.fileSize ?? 0,
-          fileExt: release.fileExt ?? "",
-          sha256: release.sha256 ?? "",
-          publicUrl: null,
-        }
-      : null,
-  );
-  const [progress, setProgress] = useState<number | null>(null);
+
+  /** 各平台的安装包槽位。新建模式下可以同时存在多个。 */
+  const [slots, setSlots] = useState<Record<string, AssetSlot>>(() => {
+    if (!release?.storageKey) return {};
+    const meta = defaultMeta(release.platform);
+    return {
+      [release.platform]: {
+        key: release.storageKey,
+        fileName: release.fileName ?? release.storageKey.split("/").pop() ?? "package",
+        fileSize: release.fileSize ?? 0,
+        fileExt: release.fileExt ?? "",
+        sha256: release.sha256 ?? "",
+        publicUrl: null,
+        arch: release.arch ?? meta.arch,
+        minOs: release.minOs ?? meta.minOs,
+      },
+    };
+  });
+
+  /** 每个平台的架构 / 最低系统版本（未上传也允许先填）。 */
+  const [meta, setMeta] = useState<Record<string, { arch: string; minOs: string }>>(() => ({
+    [initialPlatform]: {
+      arch: release?.arch ?? defaultMeta(initialPlatform).arch,
+      minOs: release?.minOs ?? defaultMeta(initialPlatform).minOs,
+    },
+  }));
+
+  const [progress, setProgress] = useState<{ platform: string; percent: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  const def = useMemo(() => platformDef(platform), [platform]);
+  const activeDef = useMemo(() => platformDef(platform), [platform]);
+  const activeMeta = meta[platform] ?? defaultMeta(platform);
+  const activeSlot = slots[platform] ?? null;
+  const readyPlatforms = PLATFORMS.filter((item) => slots[item.id]);
+  const readyCount = readyPlatforms.length;
 
-  function upload(file: File) {
+  const assetsJson = useMemo(
+    () =>
+      JSON.stringify(
+        readyPlatforms.map((item) => {
+          const slot = slots[item.id]!;
+          return {
+            platform: item.id,
+            storageKey: slot.key,
+            fileName: slot.fileName,
+            fileSize: slot.fileSize,
+            fileExt: slot.fileExt,
+            sha256: slot.sha256,
+            arch: slot.arch || meta[item.id]?.arch || "",
+            minOs: slot.minOs || meta[item.id]?.minOs || "",
+          };
+        }),
+      ),
+    [readyPlatforms, slots, meta],
+  );
+
+  function setPlatformMeta(next: Partial<{ arch: string; minOs: string }>) {
+    setMeta((prev) => ({
+      ...prev,
+      [platform]: { ...(prev[platform] ?? defaultMeta(platform)), ...next },
+    }));
+    const slot = slots[platform];
+    if (slot) {
+      setSlots((prev) => ({ ...prev, [platform]: { ...slot, ...next } }));
+    }
+  }
+
+  /** 切换平台。编辑模式下把已关联的安装包一起带过去，避免误清空。 */
+  function choosePlatform(next: string) {
+    if (editing) {
+      setSlots((prev) => {
+        const carried = prev[platform];
+        if (!carried || prev[next]) return prev;
+        const copy = { ...prev };
+        delete copy[platform];
+        copy[next] = { ...carried, ...defaultMeta(next) };
+        return copy;
+      });
+      setMeta((prev) => ({
+        ...prev,
+        [next]: prev[next] ?? defaultMeta(next),
+      }));
+    }
+    setPlatform(next);
+  }
+
+  function upload(file: File, targetPlatform: string) {
     setUploadError(null);
-    setProgress(0);
+    setProgress({ platform: targetPlatform, percent: 0 });
 
     const body = new FormData();
     body.append("file", file);
-    body.append("platform", platform);
+    body.append("platform", targetPlatform);
     body.append("version", version || "0.0.0");
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/admin/upload");
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
-        setProgress(Math.round((event.loaded / event.total) * 100));
+        setProgress({
+          platform: targetPlatform,
+          percent: Math.round((event.loaded / event.total) * 100),
+        });
       }
     };
     xhr.onload = () => {
       setProgress(null);
+      const fallbackMeta = meta[targetPlatform] ?? defaultMeta(targetPlatform);
       try {
         const data = JSON.parse(xhr.responseText) as UploadResult & { ok?: boolean; error?: string };
         if (xhr.status >= 200 && xhr.status < 300 && data.ok) {
-          setAsset({
-            key: data.key,
-            fileName: data.fileName,
-            fileSize: data.fileSize,
-            fileExt: data.fileExt,
-            sha256: data.sha256,
-            publicUrl: data.publicUrl,
-          });
+          setSlots((prev) => ({
+            ...prev,
+            [targetPlatform]: {
+              key: data.key,
+              fileName: data.fileName,
+              fileSize: data.fileSize,
+              fileExt: data.fileExt,
+              sha256: data.sha256,
+              publicUrl: data.publicUrl,
+              arch: prev[targetPlatform]?.arch || fallbackMeta.arch,
+              minOs: prev[targetPlatform]?.minOs || fallbackMeta.minOs,
+            },
+          }));
         } else {
           setUploadError(data.error ?? "上传失败。");
         }
@@ -173,33 +264,132 @@ export function ReleaseForm({
     xhr.send(body);
   }
 
+  const progressFor = (target: string) =>
+    progress && progress.platform === target ? progress.percent : null;
+
+  function dropZone(target: string) {
+    const percent = progressFor(target);
+    return (
+      <div
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          const file = event.dataTransfer.files?.[0];
+          if (file) upload(file, target);
+        }}
+        className={`flex flex-col items-center gap-3 rounded-3xl border border-dashed px-6 py-8 text-center transition-colors ${
+          dragging ? "border-primary bg-primary/6" : "border-outline-variant bg-surface-container"
+        }`}
+      >
+        <Icon name="upload" size={26} className="text-on-surface-variant" />
+        <div>
+          <p className="text-sm font-semibold">
+            {platformDef(target)?.name} 安装包 · 拖拽到这里，或选择文件
+          </p>
+          <p className="mt-1 text-xs text-on-surface-variant">
+            支持 apk / exe / msi / dmg / pkg / ipa / zip 等，单个文件最大 100MB
+          </p>
+        </div>
+        <label className="md-tonal-button md-small-button cursor-pointer">
+          <Icon name="upload" size={16} />
+          选择文件
+          <input
+            type="file"
+            className="sr-only"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) upload(file, target);
+              event.target.value = "";
+            }}
+          />
+        </label>
+
+        {percent !== null ? (
+          <div className="w-full max-w-md">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-outline-variant">
+              <div
+                className="h-full rounded-full bg-primary transition-[width]"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-xs text-on-surface-variant">正在上传… {percent}%</p>
+          </div>
+        ) : null}
+
+        {uploadError ? <p className="text-xs font-semibold text-danger">{uploadError}</p> : null}
+      </div>
+    );
+  }
+
+  function assetCard(target: string) {
+    const slot = slots[target];
+    if (!slot) return null;
+    return (
+      <div className="flex flex-col gap-2 rounded-3xl bg-surface-container p-4">
+        <div className="flex items-start gap-3">
+          <Icon name="cube" size={18} className="mt-0.5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">{slot.fileName}</p>
+            <p className="text-xs text-on-surface-variant">
+              {platformDef(target)?.name} · {formatBytes(slot.fileSize)} ·{" "}
+              {(slot.fileExt || slot.fileName.split(".").pop() || "").toUpperCase()}
+            </p>
+            <p className="mt-1 break-all font-mono text-[0.7rem] text-on-surface-variant">
+              {slot.key}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setSlots((prev) => {
+                const copy = { ...prev };
+                delete copy[target];
+                return copy;
+              })
+            }
+            className="md-text-button md-small-button text-danger"
+          >
+            <Icon name="close" size={15} />
+            移除
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <form action={formAction} className="flex flex-col gap-5">
       {release ? <input type="hidden" name="id" value={release.id} /> : null}
 
       <section className="md-card p-6">
         <h2 className="text-base font-bold">基本信息</h2>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {PLATFORMS.map((item) => {
-            const active = platform === item.id;
-            return (
-              <label
-                key={item.id}
-                className={`md-chip cursor-pointer ${active ? "md-chip-primary" : ""}`}
-              >
-                <input
-                  type="radio"
-                  name="platform"
-                  value={item.id}
-                  checked={active}
-                  onChange={() => setPlatform(item.id)}
-                  className="sr-only"
-                />
-                {item.name}
-              </label>
-            );
-          })}
-        </div>
+
+        {editing ? (
+          <>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {PLATFORMS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => choosePlatform(item.id)}
+                  className={`md-chip cursor-pointer ${platform === item.id ? "md-chip-primary" : ""}`}
+                >
+                  {item.name}
+                </button>
+              ))}
+            </div>
+            <input type="hidden" name="platform" value={platform} />
+          </>
+        ) : (
+          <p className="mt-1 text-xs text-on-surface-variant">
+            版本号、渠道、更新日志对所有平台共用；平台与安装包在下面「安装包」一栏里逐个选择上传。
+          </p>
+        )}
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div>
@@ -241,36 +431,44 @@ export function ReleaseForm({
               ))}
             </select>
           </div>
-          <div>
-            <label className="md-field-label" htmlFor="arch">
-              架构
-            </label>
-            <input
-              id="arch"
-              name="arch"
-              list="arch-options"
-              defaultValue={release?.arch ?? def?.archOptions[0] ?? ""}
-              placeholder="arm64-v8a"
-              className="md-field"
-            />
-            <datalist id="arch-options">
-              {(def?.archOptions ?? []).map((arch) => (
-                <option key={arch} value={arch} />
-              ))}
-            </datalist>
-          </div>
-          <div>
-            <label className="md-field-label" htmlFor="minOs">
-              最低系统版本
-            </label>
-            <input
-              id="minOs"
-              name="minOs"
-              defaultValue={release?.minOs ?? def?.defaultMinOs ?? ""}
-              placeholder="Android 7.0 及以上"
-              className="md-field"
-            />
-          </div>
+
+          {editing ? (
+            <>
+              <div>
+                <label className="md-field-label" htmlFor="arch">
+                  架构
+                </label>
+                <input
+                  id="arch"
+                  name="arch"
+                  list="arch-options"
+                  value={activeMeta.arch}
+                  onChange={(event) => setPlatformMeta({ arch: event.target.value })}
+                  placeholder="arm64-v8a"
+                  className="md-field"
+                />
+                <datalist id="arch-options">
+                  {(activeDef?.archOptions ?? []).map((arch) => (
+                    <option key={arch} value={arch} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <label className="md-field-label" htmlFor="minOs">
+                  最低系统版本
+                </label>
+                <input
+                  id="minOs"
+                  name="minOs"
+                  value={activeMeta.minOs}
+                  onChange={(event) => setPlatformMeta({ minOs: event.target.value })}
+                  placeholder="Android 7.0 及以上"
+                  className="md-field"
+                />
+              </div>
+            </>
+          ) : null}
+
           <div>
             <label className="md-field-label" htmlFor="publishedAt">
               发布日期
@@ -293,7 +491,7 @@ export function ReleaseForm({
               id="title"
               name="title"
               defaultValue={release?.title ?? ""}
-              placeholder="MiniReel 2.4.0 · 安卓正式版"
+              placeholder={editing ? "MiniReel 2.4.0 · 安卓正式版" : "留空则自动写成「MiniReel 2.4.0 · 平台名」"}
               className="md-field"
             />
           </div>
@@ -328,132 +526,163 @@ export function ReleaseForm({
       </section>
 
       <section className="md-card p-6">
-        <h2 className="text-base font-bold">安装包</h2>
-        <p className="mt-1 text-xs text-on-surface-variant">
-          上传安装包到对象存储（R2 或本地磁盘），或直接填写已托管的 CDN 直链。
-        </p>
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-bold">安装包</h2>
+          {readyCount > 0 ? (
+            <span className="md-chip md-chip-primary">已就绪 {readyCount} 个平台</span>
+          ) : null}
+        </div>
 
-        <div
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            setDragging(false);
-            const file = event.dataTransfer.files?.[0];
-            if (file) upload(file);
-          }}
-          className={`mt-4 flex flex-col items-center gap-3 rounded-3xl border border-dashed px-6 py-8 text-center transition-colors ${
-            dragging ? "border-primary bg-primary/6" : "border-outline-variant bg-surface-container"
-          }`}
-        >
-          <Icon name="upload" size={26} className="text-on-surface-variant" />
-          <div>
-            <p className="text-sm font-semibold">拖拽安装包到这里，或选择文件</p>
+        {editing ? (
+          <>
             <p className="mt-1 text-xs text-on-surface-variant">
-              支持 apk / exe / dmg / ipa / msi / zip，单个文件最大 2GB
+              上传安装包到对象存储，或直接填写已托管的 CDN 直链。
             </p>
-          </div>
-          <label className="md-tonal-button md-small-button cursor-pointer">
-            <Icon name="upload" size={16} />
-            选择文件
-            <input
-              type="file"
-              className="sr-only"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) upload(file);
-              }}
-            />
-          </label>
-
-          {progress !== null ? (
-            <div className="w-full max-w-md">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-outline-variant">
-                <div
-                  className="h-full rounded-full bg-primary transition-[width]"
-                  style={{ width: `${progress}%` }}
+            <div className="mt-4">{dropZone(platform)}</div>
+            {activeSlot ? (
+              <div className="mt-4">{assetCard(platform)}</div>
+            ) : (
+              <p className="mt-4 text-xs text-on-surface-variant">
+                当前没有关联安装包对象，保存后该版本仅展示更新日志。
+              </p>
+            )}
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="md-field-label" htmlFor="downloadUrl">
+                  CDN 直链（可选，填写后优先跳转）
+                </label>
+                <input
+                  id="downloadUrl"
+                  name="downloadUrl"
+                  defaultValue={release?.downloadUrl ?? ""}
+                  placeholder="https://dl.example.com/releases/android/2.4.0/minireel.apk"
+                  className="md-field"
                 />
               </div>
-              <p className="mt-1.5 text-xs text-on-surface-variant">正在上传… {progress}%</p>
-            </div>
-          ) : null}
-
-          {uploadError ? (
-            <p className="text-xs font-semibold text-danger">{uploadError}</p>
-          ) : null}
-        </div>
-
-        {asset ? (
-          <div className="mt-4 flex flex-col gap-2 rounded-3xl bg-surface-container p-4">
-            <div className="flex items-start gap-3">
-              <Icon name="cube" size={18} className="mt-0.5 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{asset.fileName}</p>
-                <p className="text-xs text-on-surface-variant">
-                  {formatBytes(asset.fileSize)} ·{" "}
-                  {(asset.fileExt || asset.fileName.split(".").pop() || "").toUpperCase()}
-                </p>
-                <p className="mt-1 break-all font-mono text-[0.7rem] text-on-surface-variant">
-                  {asset.key}
-                </p>
+              <div className="sm:col-span-2">
+                <label className="md-field-label" htmlFor="sha256">
+                  SHA-256 校验摘要
+                </label>
+                <input
+                  id="sha256"
+                  name="sha256"
+                  defaultValue={activeSlot?.sha256 || release?.sha256 || ""}
+                  placeholder="上传后自动计算，也可以手动填写"
+                  className="md-field font-mono text-xs"
+                />
               </div>
-              <button
-                type="button"
-                onClick={() => setAsset(null)}
-                className="md-text-button md-small-button text-danger"
-              >
-                <Icon name="close" size={15} />
-                移除
-              </button>
             </div>
-            <input type="hidden" name="storageKey" value={asset.key} />
-            <input type="hidden" name="fileName" value={asset.fileName} />
-            <input type="hidden" name="fileSize" value={asset.fileSize} />
-            <input type="hidden" name="fileExt" value={asset.fileExt} />
-          </div>
+            <p className="mt-3 text-xs text-on-surface-variant">
+              存储路径规则：{" "}
+              <span className="font-mono">
+                releases/{platform}/{version || "版本号"}/
+                {activeSlot?.fileName || "安装包文件名"}
+              </span>
+            </p>
+          </>
         ) : (
-          <p className="mt-4 text-xs text-on-surface-variant">
-            当前没有关联安装包对象，保存后该版本仅展示更新日志。
-          </p>
+          <>
+            <p className="mt-1 text-xs text-on-surface-variant">
+              先选平台、再上传该平台的安装包。<strong className="font-semibold">每个平台各传一次，最后统一提交</strong>，会为每个已就绪的平台各生成一条发布记录。
+            </p>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {PLATFORMS.map((item) => {
+                const isActive = platform === item.id;
+                const ready = Boolean(slots[item.id]);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => choosePlatform(item.id)}
+                    className={`md-chip cursor-pointer ${isActive ? "md-chip-primary" : ""}`}
+                  >
+                    {ready ? <Icon name="check-circle" size={14} /> : null}
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 rounded-[2rem] border border-outline-variant p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="text-sm font-semibold">{activeDef?.name ?? platform}</span>
+                <span className="text-xs text-on-surface-variant">
+                  {activeDef?.tagline}
+                </span>
+              </div>
+
+              {dropZone(platform)}
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="md-field-label" htmlFor={`arch-${platform}`}>
+                    架构
+                  </label>
+                  <input
+                    id={`arch-${platform}`}
+                    list={`arch-options-${platform}`}
+                    value={activeMeta.arch}
+                    onChange={(event) => setPlatformMeta({ arch: event.target.value })}
+                    placeholder={activeDef?.archOptions[0] ?? ""}
+                    className="md-field"
+                  />
+                  <datalist id={`arch-options-${platform}`}>
+                    {(activeDef?.archOptions ?? []).map((arch) => (
+                      <option key={arch} value={arch} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="md-field-label" htmlFor={`minOs-${platform}`}>
+                    最低系统版本
+                  </label>
+                  <input
+                    id={`minOs-${platform}`}
+                    value={activeMeta.minOs}
+                    onChange={(event) => setPlatformMeta({ minOs: event.target.value })}
+                    placeholder={activeDef?.defaultMinOs ?? ""}
+                    className="md-field"
+                  />
+                </div>
+              </div>
+
+              {activeSlot ? <div className="mt-4">{assetCard(platform)}</div> : null}
+            </div>
+
+            {readyCount > 0 ? (
+              <div className="mt-4 flex flex-col gap-2">
+                <p className="text-xs font-semibold text-on-surface-variant">
+                  本次将发布的平台
+                </p>
+                {readyPlatforms.map((item) => {
+                  const slot = slots[item.id]!;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-3 rounded-2xl bg-surface-container px-4 py-2.5"
+                    >
+                      <Icon name="check-circle" size={16} className="shrink-0" />
+                      <span className="w-24 shrink-0 text-sm font-semibold">{item.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-on-surface-variant">
+                        {slot.fileName} · {formatBytes(slot.fileSize)}
+                      </span>
+                      <span className="hidden shrink-0 text-xs text-on-surface-variant sm:block">
+                        {slot.arch || "—"} · {slot.minOs || "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-4 text-xs text-on-surface-variant">
+                还没有任何平台上传安装包。至少为一个平台上传后才能提交。
+              </p>
+            )}
+
+            <input type="hidden" name="assetsJson" value={assetsJson} readOnly />
+          </>
         )}
-
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <label className="md-field-label" htmlFor="downloadUrl">
-              CDN / R2 直链（可选，填写后优先跳转）
-            </label>
-            <input
-              id="downloadUrl"
-              name="downloadUrl"
-              defaultValue={release?.downloadUrl ?? ""}
-              placeholder="https://dl.example.com/releases/android/2.4.0/minireel.apk"
-              className="md-field"
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="md-field-label" htmlFor="sha256">
-              SHA-256 校验摘要
-            </label>
-            <input
-              id="sha256"
-              name="sha256"
-              defaultValue={asset?.sha256 || release?.sha256 || ""}
-              placeholder="上传后自动计算，也可以手动填写"
-              className="md-field font-mono text-xs"
-            />
-          </div>
-        </div>
-
-        <p className="mt-3 text-xs text-on-surface-variant">
-          存储路径规则：{" "}
-          <span className="font-mono">
-            releases/{platform}/{version || "版本号"}/
-            {asset?.fileName || "安装包文件名"}
-          </span>
-        </p>
       </section>
 
       <section className="md-card flex flex-col gap-5 p-6">
@@ -461,10 +690,9 @@ export function ReleaseForm({
         <MarkdownField
           name="releaseNotes"
           label="更新日志"
-          hint="建议按「新增 / 优化 / 修复」分组，会显示在下载站与版本详情页。"
+          hint="建议按「新增 / 优化 / 修复」分组，会显示在下载站与版本详情页；多平台共用同一份日志。"
           defaultValue={release?.releaseNotes}
         />
-
       </section>
 
       {state?.error ? (
@@ -476,13 +704,13 @@ export function ReleaseForm({
       <div className="sticky bottom-4 flex flex-wrap items-center gap-2 rounded-full border border-outline-variant bg-surface-high/95 px-4 py-3 backdrop-blur">
         <button type="submit" className="md-filled-button" disabled={pending}>
           <Icon name="check" size={17} />
-          {pending ? "正在保存…" : release ? "保存修改" : "发布版本"}
+          {pending ? "正在保存…" : release ? "保存修改" : readyCount > 1 ? `发布 ${readyCount} 个平台` : "发布版本"}
         </button>
         <Link href="/admin/releases" className="md-text-button">
           取消
         </Link>
         <span className="ml-auto text-xs text-on-surface-variant">
-          {release ? `正在编辑 #${release.id}` : "新版本记录"}
+          {release ? `正在编辑 #${release.id}` : readyCount > 0 ? `将创建 ${readyCount} 条记录` : "新版本记录"}
         </span>
       </div>
     </form>
