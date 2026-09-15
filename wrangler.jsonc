@@ -1,0 +1,51 @@
+{
+  // Cloudflare Workers / OpenNext 部署配置。
+  //
+  // 部署前必做：
+  //   1. `npx wrangler hyperdrive create minireel-db --connection-string="postgresql://..."`，
+  //      把返回的 id 填进下面的 hyperdrive[0].id（现在是占位符，不改会部署失败）。
+  //   2. 用 `npx wrangler secret put <NAME>` 写入所有敏感变量（见文件末尾注释）。
+  //
+  // 应用自身通过 R2 的 S3 兼容接口读写对象，所以 r2_buckets 绑定是可选的，
+  // 保留它只是为了方便 `wrangler r2 object put/delete` 管理安装包。
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "minireel-download-site",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-04-01",
+  // nodejs_compat 提供 pg / node:crypto / node:net 等 Node API，
+  // Cloudflare 官方正是通过它 + Hyperdrive 连接 PostgreSQL。
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "MINIREEL_R2",
+      "bucket_name": "minireel-releases"
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // TODO(deploy): 替换为 `wrangler hyperdrive create` 返回的真实 id。
+      "id": "replace-with-your-hyperdrive-id"
+    }
+  ],
+  "vars": {
+    "STORAGE_DRIVER": "r2",
+    "R2_BUCKET": "minireel-releases"
+  }
+  // 敏感变量用 secret 写入，不要提交到仓库：
+  //   npx wrangler secret put ADMIN_PASSWORD          # 必填，后台口令
+  //   npx wrangler secret put ADMIN_SESSION_SECRET    # 必填，会话签名密钥（随机长字符串）
+  //   npx wrangler secret put R2_ACCOUNT_ID           # 使用 R2 时必填
+  //   npx wrangler secret put R2_ACCESS_KEY_ID
+  //   npx wrangler secret put R2_SECRET_ACCESS_KEY
+  //   npx wrangler secret put DATABASE_URL            # 可选：仅在不用 Hyperdrive 时兜底
+  //
+  // R2_PUBLIC_BASE_URL 不是敏感信息，想用公开域名跳转时可以放进 vars。
+}

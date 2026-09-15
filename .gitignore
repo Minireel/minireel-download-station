@@ -1,0 +1,19 @@
+node_modules
+# 出问题时会把 node_modules 改名保留，别再被提交进来
+node_modules_*
+.next
+out
+build
+.data
+.vercel
+.wrangler
+.open-next
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+# wrangler 的本地密钥文件：包含生产密码与 R2 密钥，绝对不要提交
+.dev.vars
+.dev.vars.*
+.DS_Store
+npm-debug.log*
