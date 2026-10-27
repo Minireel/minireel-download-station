@@ -58,6 +58,37 @@ export function SiteFooter() {
         </div>
       </div>
 
+      <div id="support" className="scroll-mt-24 border-t border-outline-variant">
+        <div className="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-10 sm:flex-row sm:items-center sm:gap-6 sm:px-6">
+          <div className="flex shrink-0 flex-col items-start gap-2">
+            <div className="rounded-2xl bg-white p-1.5 ring-1 ring-outline-variant/60">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/images/afdian-qr.png"
+                alt="爱发电支持二维码"
+                width={720}
+                height={720}
+                className="h-[96px] w-[96px] rounded-lg"
+              />
+            </div>
+            <span className="text-[0.7rem] leading-snug text-on-surface-variant/70">
+              扫码 · 爱发电 WEP-56
+            </span>
+          </div>
+
+          <div className="max-w-2xl">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-on-surface-variant">
+              <Icon name="coffee" size={15} />
+              如果 MiniReel 帮到了你
+            </h3>
+            <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">
+              MiniReel 和这个下载站都由个人开发者维护：服务器与 CDN 流量每月有固定开销，新平台的适配和问题修复大多在学习、工作之后完成。
+              项目一直免费，也不会因为支持与否有任何区别——如果它恰好帮到了你，可以扫码请我喝杯咖啡，谢谢。
+            </p>
+          </div>
+        </div>
+      </div>
+
       <div className="border-t border-outline-variant">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-xs text-on-surface-variant sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <span>© {new Date().getFullYear()} MiniReel 下载站 · 仅用于安装包分发</span>

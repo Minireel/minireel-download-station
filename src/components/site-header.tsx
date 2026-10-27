@@ -8,6 +8,8 @@ const NAV = [
   { href: "/versions", label: "往期版本" },
 ];
 
+const SUPPORT_HREF = "/#support";
+
 export function SiteHeader() {
   return (
     <header className="sticky top-0 z-50 border-b border-outline-variant/70 bg-surface/85 backdrop-blur-xl">
@@ -27,6 +29,14 @@ export function SiteHeader() {
               {item.label}
             </Link>
           ))}
+          <Link
+            href={SUPPORT_HREF}
+            className="ml-1 inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium text-on-surface-variant/75 transition-colors hover:bg-on-surface/8 hover:text-on-surface"
+            title="关于维护与支持"
+          >
+            <Icon name="coffee" size={16} />
+            请杯咖啡
+          </Link>
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
@@ -61,6 +71,13 @@ export function SiteHeader() {
                   {item.label}
                 </Link>
               ))}
+              <Link
+                href={SUPPORT_HREF}
+                className="flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium text-on-surface-variant/80 hover:bg-on-surface/8"
+              >
+                <Icon name="coffee" size={16} />
+                请杯咖啡
+              </Link>
               <Link
                 href="/admin/login"
                 className="block rounded-2xl px-4 py-2.5 text-sm font-medium text-on-surface-variant hover:bg-on-surface/8"

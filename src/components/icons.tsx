@@ -40,7 +40,8 @@ export type IconName =
   | "laptop"
   | "apple"
   | "list"
-  | "cube";
+  | "cube"
+  | "coffee";
 
 const strokeProps = {
   fill: "none",
@@ -298,6 +299,13 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M12 3.5l7.5 4v9L12 20.5 4.5 16.5v-9z" />
       <path d="M4.5 7.5 12 11.5l7.5-4" />
       <path d="M12 11.5v9" />
+    </g>
+  ),
+  coffee: (
+    <g {...strokeProps}>
+      <path d="M5 9.5h10v4.8a4.7 4.7 0 0 1-4.7 4.7h-.6A4.7 4.7 0 0 1 5 14.3z" />
+      <path d="M15 11h1.6a2.4 2.4 0 0 1 0 4.8H15" />
+      <path d="M8 6.5V4.5M12 6.5V4.5" />
     </g>
   ),
 };
